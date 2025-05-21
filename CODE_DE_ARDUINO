@@ -1,0 +1,111 @@
+#include <Wire.h>
+
+// Configuración de pines
+const int encoder1 = 2;      // Sensor infrarrojo en pin 2 (con interrupción)
+const int ntc1 = A0;         // NTC en pin analógico A0
+const int bateria1 = A1;     // Divisor de voltaje en pin A1
+const int pulso1 = 3;         // Pulso de encendido
+
+// Parámetros del encoder
+const int pulsos_rpm = 20; // Número de ranuras/marcas en el encoder
+volatile unsigned int pulseCount = 0;
+unsigned long lastMillis = 0;
+const unsigned long sampleTime = 1000; // Tiempo de muestreo en ms
+
+// Parámetros de la rueda (225/55-8)
+const float diametro_rueda = 18.0 * 0.0254; // Diámetro en metros (18 pulgadas a metros)
+const float circunferencia_rueda = diametro_rueda * PI; // Circunferencia en metros
+
+// Variables para distancia y velocidad
+float distancia = 0.0; // Distancia total en metros
+float velocidad = 0.0;      // Velocidad en km/h
+
+// Configuración NTC
+const float beta = 3950.0;     // Beta del termistor
+const float nominalTemp = 21.0; // Temperatura nominal (25°C)
+const float nominalRes = 100000.0; // Resistencia nominal (100K)
+const float seriesRes = 100000.0; // Resistencia en serie (100K)
+
+// Divisor de voltaje
+const float R1 = 220000.0;     // Resistencia superior (220K)
+const float R2 = 10000.0;      // Resistencia inferior (10K)
+const float vRef = 3.3;        // Voltaje referencia (3.3V)
+
+void setup() {
+  Serial.begin(115200); // Inicia comunicación serial a alta velocidad
+  
+  // Configurar sensor infrarrojo
+  pinMode(encoder1, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(encoder1), encoderInterrupt, CHANGE); // Usamos CHANGE para detectar ambos flancos
+
+  // Configurar entradas analógicas
+  pinMode(ntc1, INPUT);
+  pinMode(bateria1, INPUT);
+  pinMode(pulso1, INPUT);
+
+  Serial.println("Sistema listo. Enviando datos por Serial...");
+  Serial.println("Velocidad(km/h),Distancia(m),Temperatura(°C),Voltaje(V)"); // Encabezados CSV
+}
+
+void loop() {
+  if (millis() - lastMillis >= sampleTime) {
+    int pulso_p=digitalRead(pulso1);
+    // Deshabilitar interrupción durante cálculos
+    detachInterrupt(digitalPinToInterrupt(encoder1));
+    
+    // Calcular valores
+    float rpm = (pulseCount * 60.0) / (pulsos_rpm * (sampleTime / 1000.0));
+    velocidad = (rpm * circunferencia_rueda * 60.0) / 1000.0; // Convertir a km/h
+    
+    // Calcular distancia recorrida en este intervalo
+    float distanceInterval = (pulseCount * circunferencia_rueda) / pulsos_rpm;
+    distancia += distanceInterval;
+    
+    float temp = readTemperature();
+    float voltage = readBatteryVoltage();
+    
+    // Enviar datos por Serial en formato CSV
+    Serial.print(rpm); Serial.print(",");      
+    Serial.print(velocidad, 1); Serial.print(",");      // 1 decimal para velocidad
+    Serial.print(distancia, 2); Serial.print(","); // 2 decimales para distancia
+    Serial.print(temp, 2); Serial.print(",");          // 2 decimales para temperatura
+    Serial.print(voltage, 2); Serial.print(",");
+    Serial.println(pulso_p);                       // 2 decimales para voltaje
+    
+    // Reiniciar contadores
+    pulseCount = 0;
+    lastMillis = millis();
+    
+    // Rehabilitar interrupción
+    attachInterrupt(digitalPinToInterrupt(encoder1), encoderInterrupt, CHANGE);
+  }
+}
+
+// Función de interrupción para el encoder
+void encoderInterrupt() {
+  pulseCount++;
+}
+
+// Lectura de temperatura (sin cambios)
+float readTemperature() {
+  float adc = analogRead(ntc1);
+  float resistance = seriesRes / ((1023.0 / adc) - 1.0);
+  
+  // Ecuación Steinhart-Hart
+  float steinhart = resistance / nominalRes;     // (R/Ro)
+  steinhart = log(steinhart);                    // ln(R/Ro)
+  steinhart /= beta;                             // 1/B * ln(R/Ro)
+  steinhart += 1.0 / (nominalTemp + 273.15);     // + (1/To)
+  steinhart = 1.0 / steinhart;                   // Invertir
+  steinhart -= 273.15;                           // Convertir a °C
+  
+  return steinhart;
+}
+
+// Lectura de voltaje de batería (sin cambios)
+float readBatteryVoltage() {
+  float adc = analogRead(bateria1);
+  float vOut = (adc * vRef) / 1023.0;
+  float vIn = vOut / (R2/(R1+R2));
+  return vIn;
+}
